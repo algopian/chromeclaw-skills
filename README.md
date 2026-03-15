@@ -24,17 +24,8 @@ See the [Xiaohongshu README](skills/xiaohongshu/README.md) for quick start, arch
 ## Getting Started
 
 1. Install [ChromeClaw](https://chromewebstore.google.com/detail/chromeclaw-your-own-perso/lnahopfgnfhcfchffbckmbbkopcmojme) from the Chrome Web Store ([source code](https://github.com/algopian/ChromeClaw))
-2. Open a target site tab and note the `tabId`
-3. Execute skill modules:
-
-```
-execute_javascript({
-  action: "execute",
-  path: "skills/<skill>/code/<module>.js",
-  args: { action: "<action>", ... },
-  tabId: <TAB_ID>
-})
-```
+2. Open the ChromeClaw skill config page and import the skill you want to use
+3. Ask the ChromeClaw agent to use the skill — it will handle tab management and module execution automatically
 
 ## Acknowledgements
 
