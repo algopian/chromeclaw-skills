@@ -23,7 +23,7 @@ See the [Xiaohongshu README](skills/xiaohongshu/README.md) for quick start, arch
 
 ## Getting Started
 
-1. Install [ChromeClaw](https://chromewebstore.google.com/detail/chromeclaw-your-own-perso/lnahopfgnfhcfchffbckmbbkopcmojme) from the Chrome Web Store
+1. Install [ChromeClaw](https://chromewebstore.google.com/detail/chromeclaw-your-own-perso/lnahopfgnfhcfchffbckmbbkopcmojme) from the Chrome Web Store ([source code](https://github.com/algopian/ChromeClaw))
 2. Open a target site tab and note the `tabId`
 3. Execute skill modules:
 
