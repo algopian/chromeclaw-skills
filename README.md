@@ -1,6 +1,6 @@
 # chromeclaw-skills
 
-A collection of browser automation skills for [ChromeClaw](https://github.com/nicekid1/chromeclaw) — JavaScript modules injected into live Chrome tabs via `execute_javascript`. No APIs, no extensions — just real Chrome with real cookies.
+A collection of [ChromeClaw](https://github.com/algopian/ChromeClaw)-compatible skills for the ChromeClaw browser extension — JavaScript modules injected into live Chrome tabs via `execute_javascript`. No APIs, no extra extensions — just real Chrome with real cookies.
 
 ## Skills
 
@@ -23,7 +23,7 @@ See the [Xiaohongshu README](skills/xiaohongshu/README.md) for quick start, arch
 
 ## Getting Started
 
-1. Set up [ChromeClaw](https://github.com/nicekid1/chromeclaw) with a running Chrome instance
+1. Install the [ChromeClaw](https://github.com/algopian/ChromeClaw) browser extension
 2. Open a target site tab and note the `tabId`
 3. Execute skill modules:
 
