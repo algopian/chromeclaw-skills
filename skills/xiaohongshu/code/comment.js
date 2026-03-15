@@ -10,31 +10,31 @@
 const VERSION = '2.2.0';
 const { action = 'checkPost', comment: commentText, commentId, replyToUser, commentLimit = 20, includeReplies = false } = args;
 
-// ── Login Guard ────────────────────────────────────────────────────
+// ── Login Guard (shared) ────────────────────────────────────────────
 {
-  const url = window.location.href;
-  const bodyText = document.body ? document.body.innerText : '';
-  const isLoginPage = url.includes('/login');
-  const hasPhoneInput = !!(document.querySelector('input[placeholder="手机号"]') || document.querySelector('input[placeholder="输入手机号"]') || document.querySelector('input[name="xhs-pc-web-phone"]'));
-  const hasSmsCodeInput = !!(document.querySelector('input[placeholder="验证码"]') || document.querySelector('input[placeholder="输入验证码"]'));
-  const hasQrLogin = !!(document.querySelector('canvas') && bodyText.includes('扫一扫登录'));
-  const hasLoginText = bodyText.includes('短信登录') || bodyText.includes('APP扫一扫登录');
-  const hasLoginModal = !!(document.querySelector('[class*="login-modal"]') || document.querySelector('[class*="loginContainer"]'));
-  const hasSession = (document.cookie || '').includes('web_session') || (document.cookie || '').includes('a1');
-  const loginRequired = isLoginPage || (hasPhoneInput && hasSmsCodeInput) || (hasQrLogin && hasLoginText) || hasLoginModal || (hasLoginText && !hasSession);
-  if (loginRequired) {
-    return { action: 'LOGIN_REQUIRED', loginRequired: true, stopped: true, context: `comment/${action}`, currentUrl: url, message: '⛔ 需要登录！请手动完成登录。' };
+  if (!window.__xhsLoginGuard) {
+    // Inline fallback if shared module not loaded
+    const url = window.location.href;
+    const bodyText = document.body ? document.body.innerText : '';
+    const hasSession = (document.cookie || '').includes('web_session') || (document.cookie || '').includes('a1');
+    const loginRequired = url.includes('/login') || 
+      !!(document.querySelector('[class*="login-modal"]') || document.querySelector('[class*="loginContainer"]')) ||
+      ((bodyText.includes('短信登录') || bodyText.includes('APP扫一扫登录')) && !hasSession);
+    if (loginRequired) return { action: 'LOGIN_REQUIRED', loginRequired: true, stopped: true, context: `comment/${action}`, currentUrl: url, message: '⛔ 需要登录！请手动完成登录。' };
+  } else {
+    const _lg = window.__xhsLoginGuard('comment/' + action);
+    if (_lg) return _lg;
   }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
-function parseCount(text) {
+const parseCount = window.__xhsParseCount || function(text) {
   if (!text) return 0;
   text = text.trim().replace('+', '').replace(/,/g, '');
   if (text.includes('万')) return Math.round(parseFloat(text) * 10000);
   if (text.includes('亿')) return Math.round(parseFloat(text) * 100000000);
   return parseInt(text, 10) || 0;
-}
+};
 
 function getCommentSelectors() { return ['[class*="comment-item"]', '[class*="commentItem"]', '[class*="comment-container"]', '[class*="note-comment"]', 'div[class*="list-item"]', 'div[class*="comment"] > div']; }
 

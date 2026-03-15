@@ -4,7 +4,7 @@
 // @arg {string} [title] - Post title (max 20 chars, auto-truncated)
 // @arg {string} [content] - Post body text (max 1000 chars)
 // @arg {string[]} [tags] - Hashtag strings (without #)
-// @arg {string[]} [images] - Image file paths or URLs for upload
+// @arg {string[]} [images] - Base64 data URI strings for image upload (max 9, uploaded before filling form)
 // @arg {string} [video] - Video file path for upload
 // @arg {string} [visibility] - "公开可见" | "仅自己可见" | "仅互关好友可见"
 // @arg {boolean} [isOriginal] - Whether to declare as original content
@@ -13,23 +13,23 @@
 // @arg {object} [coverOptions] - Options for generateCover: { title, subtitle, dataPoints[], bgColor? }
 // @arg {number} [timeoutMs] - Max wait time for waitForReady (default 8000)
 
-const VERSION = '2.4.0';
+const VERSION = '2.6.0';
 const { action = 'help', title: argTitle, content: argContent, tags: argTags, images: argImages, video: argVideo, visibility: argVisibility, isOriginal: argIsOriginal, scheduleAt: argScheduleAt, tab: argTab, coverOptions: argCoverOptions, timeoutMs: argTimeoutMs = 10000 } = args;
 
-// ── Login Guard ─────────────────────────────────────────────────────
+// ── Login Guard (shared) ────────────────────────────────────────────
 {
-  const url = window.location.href;
-  const bodyText = document.body ? document.body.innerText : '';
-  const isLoginPage = url.includes('/login');
-  const hasPhoneInput = !!(document.querySelector('input[placeholder*="手机号"]'));
-  const hasSmsCodeInput = !!(document.querySelector('input[placeholder*="验证码"]'));
-  const hasQrLogin = !!(document.querySelector('canvas') && bodyText.includes('扫一扫登录'));
-  const hasLoginText = bodyText.includes('短信登录') || bodyText.includes('APP扫一扫登录');
-  const hasLoginModal = !!(document.querySelector('[class*="login-modal"]') || document.querySelector('[class*="loginContainer"]'));
-  const hasSession = (document.cookie || '').includes('web_session') || (document.cookie || '').includes('a1');
-  const loginRequired = isLoginPage || (hasPhoneInput && hasSmsCodeInput) || (hasQrLogin && hasLoginText) || hasLoginModal || (hasLoginText && !hasSession);
-  if (loginRequired) {
-    return { action: 'LOGIN_REQUIRED', loginRequired: true, stopped: true, context: `publish/${action}`, currentUrl: url, message: '⛔ 需要登录！请在浏览器中手动完成登录。' };
+  if (!window.__xhsLoginGuard) {
+    // Inline fallback if shared module not loaded
+    const url = window.location.href;
+    const bodyText = document.body ? document.body.innerText : '';
+    const hasSession = (document.cookie || '').includes('web_session') || (document.cookie || '').includes('a1');
+    const loginRequired = url.includes('/login') || 
+      !!(document.querySelector('[class*="login-modal"]') || document.querySelector('[class*="loginContainer"]')) ||
+      ((bodyText.includes('短信登录') || bodyText.includes('APP扫一扫登录')) && !hasSession);
+    if (loginRequired) return { action: 'LOGIN_REQUIRED', loginRequired: true, stopped: true, context: `publish/${action}`, currentUrl: url, message: '⛔ 需要登录！请在浏览器中手动完成登录。' };
+  } else {
+    const _lg = window.__xhsLoginGuard('publish/' + action);
+    if (_lg) return _lg;
   }
 }
 
@@ -200,6 +200,24 @@ if (action === 'waitForReady') {
   });
 }
 
+if (action === 'navigateToPublish') {
+  // Smart navigation: only navigate if not already on publish page
+  const currentUrl = window.location.href;
+  if (currentUrl.includes('creator.xiaohongshu.com/publish/publish')) {
+    return {
+      action, success: true, alreadyOnPage: true,
+      hint: 'Already on publish page. Call selectTab("上传图文") next.',
+    };
+  }
+  window.location.href = 'https://creator.xiaohongshu.com/publish/publish';
+  // Wait for navigation to start
+  await new Promise(r => setTimeout(r, 2000));
+  return {
+    action, success: true, navigated: true,
+    hint: 'Navigation started. Wait 3-5s, then call selectTab("上传图文").',
+  };
+}
+
 if (action === 'selectTab') {
   const tab = argTab || '上传图文';
   const validTabs = ['上传视频', '上传图文', '写长文'];
@@ -313,7 +331,12 @@ if (action === 'fillTitle') {
   const truncated = argTitle.length > 20;
   const title = argTitle.substring(0, 20);
 
-  const el = getTitleInput();
+  let el = getTitleInput();
+  if (!el) {
+    // Auto-retry once after 1.5s (editor may still be loading)
+    await new Promise(r => setTimeout(r, 1500));
+    el = getTitleInput();
+  }
   if (!el) return { action: 'fillTitle', error: 'Title input not found. Editor may not be loaded — upload an image first, then call waitForReady.' };
 
   el.focus();
@@ -325,7 +348,12 @@ if (action === 'fillContent') {
   if (!argContent) return { action: 'fillContent', error: 'content argument is required' };
   if (argContent.length > 1000) return { action: 'fillContent', error: `Content exceeds 1000 chars (got ${argContent.length}). Please truncate.` };
 
-  const editor = getContentEditor();
+  let editor = getContentEditor();
+  if (!editor) {
+    // Auto-retry once after 1.5s (editor may still be loading)
+    await new Promise(r => setTimeout(r, 1500));
+    editor = getContentEditor();
+  }
   if (!editor) return { action: 'fillContent', error: 'Content editor not found. Editor may not be loaded — upload an image first, then call waitForReady.' };
 
   replaceEditorContent(editor, argContent);
@@ -353,6 +381,57 @@ if (action === 'addTags') {
 }
 
 if (action === 'fullPublish') {
+  // If imageDataUrl provided but editor not ready, upload image first (editor appears after upload)
+  if (args.imageDataUrl && !getReadinessInfo().isReady) {
+    const fileInput = getFileInput('.jpg');
+    if (fileInput) {
+      try {
+        const dataUrl = args.imageDataUrl;
+        const parts = dataUrl.split(',');
+        const mime = parts[0].match(/:(.*?);/)[1];
+        const raw = atob(parts[1]);
+        const arr = new Uint8Array(raw.length);
+        for (let j = 0; j < raw.length; j++) arr[j] = raw.charCodeAt(j);
+        const blob = new Blob([arr], { type: mime });
+        const ext = mime.includes('png') ? 'png' : 'jpg';
+        const file = new File([blob], `cover.${ext}`, { type: mime });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        // Wait for editor to appear after image upload
+        await new Promise(r => setTimeout(r, 3000));
+      } catch (e) { /* image upload failed, continue anyway */ }
+    }
+  }
+
+  // If images provided as base64, upload them first (editor appears after image upload)
+  if (args.images && Array.isArray(args.images) && args.images.length > 0) {
+    const fileInput = getFileInput('.jpg');
+    if (fileInput) {
+      const dt = new DataTransfer();
+      for (let i = 0; i < Math.min(args.images.length, 9); i++) {
+        try {
+          const dataUrl = args.images[i];
+          const parts = dataUrl.split(',');
+          const mime = parts[0].match(/:(.*?);/)[1];
+          const raw = atob(parts[1]);
+          const arr = new Uint8Array(raw.length);
+          for (let j = 0; j < raw.length; j++) arr[j] = raw.charCodeAt(j);
+          const blob = new Blob([arr], { type: mime });
+          const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+          dt.items.add(new File([blob], `image-${i}.${ext}`, { type: mime }));
+        } catch (e) { /* skip invalid images */ }
+      }
+      if (dt.files.length > 0) {
+        fileInput.files = dt.files;
+        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+        // Wait for editor to appear after image upload
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+  }
+
   const readiness = getReadinessInfo();
   if (!readiness.isReady) {
     return {
@@ -360,11 +439,12 @@ if (action === 'fullPublish') {
       error: 'Editor not ready — title input or content editor not found.',
       readiness,
       hint: 'Required workflow BEFORE fullPublish:\n' +
-            '1. browser navigate → /publish/publish\n' +
+            '1. navigateToPublish (or browser navigate → /publish/publish)\n' +
             '2. selectTab("上传图文")\n' +
-            '3. generateCover (image must be uploaded FIRST — XHS only shows editor after image)\n' +
+            '3. Upload image: generateCover / uploadImageBase64 / pass imageDataUrl to fullPublish\n' +
             '4. waitForReady()\n' +
-            '5. THEN fullPublish()',
+            '5. THEN fullPublish()\n' +
+            'TIP: Pass imageDataUrl to fullPublish to auto-upload before filling.',
     };
   }
 
@@ -508,8 +588,118 @@ if (action === 'setSchedule') {
   return { action: 'setSchedule', success: true, scheduleAt: argScheduleAt, hint: 'Clicked schedule trigger. Use browser snapshot to set date/time in the picker.' };
 }
 
-if (action === 'uploadImages') {
-  return { action: 'uploadImages', hint: 'Use generateCover to create a programmatic cover, or use browser click on the file input ref to select files manually.' };
+if (action === 'uploadImages' || action === 'uploadImageBase64') {
+  // Upload one or more images from base64 data URIs
+  // args.imageDataUrls: string[] of "data:image/...;base64,..." strings
+  // OR args.imageDataUrl: single string
+  const dataUrls = args.imageDataUrls || (args.imageDataUrl ? [args.imageDataUrl] : null);
+  if (!dataUrls || dataUrls.length === 0) {
+    return {
+      action, success: false,
+      error: 'imageDataUrls[] or imageDataUrl argument required (base64 data URI strings).',
+      hint: 'Provide base64 data URIs like "data:image/jpeg;base64,/9j/4AAQ...".\n' +
+            'To get images from Gemini, use the extension IndexedDB bridge:\n' +
+            '1. Generate image on Gemini tab → get base64 via urlToBase64()\n' +
+            '2. Store in extension IndexedDB via execute_javascript sandbox\n' +
+            '3. Read from extension IndexedDB and pass as imageDataUrl to this action',
+    };
+  }
+
+  const fileInput = getFileInput('.jpg');
+  if (!fileInput) {
+    return {
+      action, success: false,
+      error: 'No file input found. Make sure you are on "上传图文" tab.',
+      hint: 'Call selectTab("上传图文") first.',
+    };
+  }
+
+  // Convert base64 data URIs to File objects
+  const dt = new DataTransfer();
+  const results = [];
+  for (let i = 0; i < dataUrls.length; i++) {
+    try {
+      const dataUrl = dataUrls[i];
+      const parts = dataUrl.split(',');
+      const mime = parts[0].match(/:(.*?);/)[1];
+      const raw = atob(parts[1]);
+      const arr = new Uint8Array(raw.length);
+      for (let j = 0; j < raw.length; j++) arr[j] = raw.charCodeAt(j);
+      const blob = new Blob([arr], { type: mime });
+      const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+      const file = new File([blob], `image-${i}.${ext}`, { type: mime });
+      dt.items.add(file);
+      results.push({ index: i, success: true, size: blob.size, type: mime });
+    } catch (e) {
+      results.push({ index: i, success: false, error: e.message });
+    }
+  }
+
+  fileInput.files = dt.files;
+  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+  const successCount = results.filter(r => r.success).length;
+  return {
+    action, success: successCount > 0,
+    uploaded: successCount, total: dataUrls.length,
+    results,
+    hint: successCount > 0
+      ? 'Image(s) uploaded. The editor form (title/content) should now appear. Wait 1-2s, then call waitForReady → fillTitle/fillContent.'
+      : 'All uploads failed. Check base64 data URI format.',
+  };
+}
+
+if (action === 'uploadImageFromUrl') {
+  // Upload an image from a URL by fetching it and injecting into file input
+  // This works for same-origin URLs or URLs that allow CORS
+  // For cross-origin images (e.g. from Gemini/lh3.googleusercontent.com),
+  // the agent should first extract the base64 via a helper tab and use uploadImageBase64 instead.
+  const imageUrl = args.imageUrl;
+  if (!imageUrl) {
+    return {
+      action, success: false,
+      error: 'imageUrl argument required.',
+      hint: 'For cross-origin images (e.g. Gemini-generated), use this workflow:\n' +
+            '1. Open image URL in its own browser tab\n' +
+            '2. On that tab: canvas.toDataURL() to get base64\n' +
+            '3. Read base64 via CDP Runtime.evaluate\n' +
+            '4. Pass to uploadImageBase64 action\n' +
+            'OR: Use the agent-level image-bridge approach documented in SKILL.md',
+    };
+  }
+
+  const fileInput = getFileInput('.jpg');
+  if (!fileInput) {
+    return {
+      action, success: false,
+      error: 'No file input found. Make sure you are on "上传图文" tab.',
+      hint: 'Call selectTab("上传图文") first.',
+    };
+  }
+
+  try {
+    const resp = await fetch(imageUrl, { credentials: 'omit' });
+    if (!resp.ok) throw new Error('Fetch failed: HTTP ' + resp.status);
+    const blob = await resp.blob();
+    const mime = blob.type || 'image/jpeg';
+    const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+    const file = new File([blob], `uploaded-image.${ext}`, { type: mime });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    fileInput.files = dt.files;
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    return {
+      action, success: true,
+      size: blob.size, type: mime,
+      hint: 'Image uploaded from URL. Editor form should appear. Wait 1-2s, then call waitForReady → fillTitle/fillContent.',
+    };
+  } catch (e) {
+    return {
+      action, success: false,
+      error: 'Failed to fetch image: ' + e.message,
+      hint: 'This likely failed due to CORS. For cross-origin images, use uploadImageBase64 with a pre-extracted base64 data URI instead.',
+    };
+  }
 }
 
 if (action === 'uploadVideo') {
@@ -523,14 +713,14 @@ return {
   validActions: [
     'verifyPage', 'waitForReady', 'selectTab',
     'fillTitle', 'fillContent', 'addTags',
-    'generateCover', 'uploadImages', 'uploadVideo',
+    'navigateToPublish', 'generateCover', 'uploadImages', 'uploadImageFromUrl', 'uploadVideo',
     'setVisibility', 'setOriginal', 'setSchedule',
     'clickPublish', 'saveDraft', 'fullPublish', 'checkPublishResult',
   ],
   recommendedWorkflow: [
     '1. browser navigate → /publish/publish',
     '2. selectTab("上传图文")',
-    '3. generateCover({ coverOptions: { title, subtitle, dataPoints, emoji } })',
+    '3. generateCover / uploadImageBase64 / uploadImageFromUrl / pass images[] to fullPublish',
     '4. waitForReady()  — polls until title input + editor appear',
     '5. fullPublish({ title, content, tags })',
     '6. (wait 1s)',

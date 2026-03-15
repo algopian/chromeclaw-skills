@@ -7,39 +7,177 @@
 // @arg {object} [filters] - Search filters: sort_by, note_type, publish_time
 // @arg {boolean} [loadAllComments] - Whether to load all comments (for getFeedDetail)
 // @arg {number} [commentLimit] - Max comments to load (default 20)
+// @arg {number} [limit] - Max search results to return
 
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const { action = 'listFeeds', keyword = '', feedId = '', xsecToken = '', filters = {}, loadAllComments: shouldLoadAll = false, commentLimit = 20 } = args;
 
-// ── Login Guard ────────────────────────────────────────────────────
+// ── Login Guard (shared) ────────────────────────────────────────────
 {
-  const url = window.location.href;
-  const bodyText = document.body ? document.body.innerText : '';
-  const isLoginPage = url.includes('/login');
-  const hasPhoneInput = !!(document.querySelector('input[placeholder="手机号"]') || document.querySelector('input[placeholder="输入手机号"]') || document.querySelector('input[name="xhs-pc-web-phone"]'));
-  const hasSmsCodeInput = !!(document.querySelector('input[placeholder="验证码"]') || document.querySelector('input[placeholder="输入验证码"]'));
-  const hasQrLogin = !!(document.querySelector('canvas') && bodyText.includes('扫一扫登录'));
-  const hasLoginText = bodyText.includes('短信登录') || bodyText.includes('APP扫一扫登录');
-  const hasLoginModal = !!(document.querySelector('[class*="login-modal"]') || document.querySelector('[class*="loginContainer"]'));
-  const hasSession = (document.cookie || '').includes('web_session') || (document.cookie || '').includes('a1');
-  const loginRequired = isLoginPage || (hasPhoneInput && hasSmsCodeInput) || (hasQrLogin && hasLoginText) || hasLoginModal || (hasLoginText && !hasSession);
-  if (loginRequired) {
-    return { action: 'LOGIN_REQUIRED', loginRequired: true, stopped: true, context: `feed/${action}`, currentUrl: url, message: '⛔ 需要登录！请在浏览器中手动完成登录。' };
+  if (!window.__xhsLoginGuard) {
+    // Inline fallback if shared module not loaded
+    const url = window.location.href;
+    const bodyText = document.body ? document.body.innerText : '';
+    const hasSession = (document.cookie || '').includes('web_session') || (document.cookie || '').includes('a1');
+    const loginRequired = url.includes('/login') || 
+      !!(document.querySelector('[class*="login-modal"]') || document.querySelector('[class*="loginContainer"]')) ||
+      ((bodyText.includes('短信登录') || bodyText.includes('APP扫一扫登录')) && !hasSession);
+    if (loginRequired) return { action: 'LOGIN_REQUIRED', loginRequired: true, stopped: true, context: `feed/${action}`, currentUrl: url, message: '⛔ 需要登录！请在浏览器中手动完成登录。' };
+  } else {
+    const _lg = window.__xhsLoginGuard('feed/' + action);
+    if (_lg) return _lg;
   }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
-function safeText(el) { return el ? (el.textContent || '').trim() : ''; }
+const safeText = window.__xhsSafeText || function(el) { return el ? (el.textContent || '').trim() : ''; };
 function safeAttr(el, attr) { return el ? (el.getAttribute(attr) || '') : ''; }
 function safeHref(el) { try { return el ? el.href : ''; } catch { return ''; } }
-function parseCount(text) {
+const parseCount = window.__xhsParseCount || function(text) {
   if (!text) return 0;
   text = text.trim().replace('+', '').replace(/,/g, '');
   if (text.includes('万')) return Math.round(parseFloat(text) * 10000);
   if (text.includes('亿')) return Math.round(parseFloat(text) * 100000000);
   return parseInt(text, 10) || 0;
-}
+};
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+  // ── SSR State Extraction (primary data source) ──
+  const FILTER_OPTIONS = {
+    sort_by: ['综合', '最新', '最多点赞', '最多评论', '最多收藏'],
+    note_type: ['不限', '视频', '图文'],
+    publish_time: ['不限', '一天内', '一周内', '半年内'],
+    search_scope: ['不限', '已看过', '未看过', '已关注'],
+    location: ['不限', '同城', '附近'],
+  };
+
+  // ── Chinese count parser (handles "1.2万", "3亿" formats) ──
+  function parseXhsCount(s) {
+    if (typeof s === 'number') return s;
+    s = String(s || '0');
+    if (s.includes('万')) return Math.round(parseFloat(s) * 10000);
+    if (s.includes('亿')) return Math.round(parseFloat(s) * 100000000);
+    return parseInt(s) || 0;
+  }
+
+  async function waitForInitialState(timeout = 5000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      if (window.__INITIAL_STATE__ && typeof window.__INITIAL_STATE__ === 'object') {
+        const keys = Object.keys(window.__INITIAL_STATE__);
+        if (keys.length > 0) return true;
+      }
+      await sleep(200);
+    }
+    return false;
+  }
+
+  function unwrapRef(obj) {
+    if (!obj) return null;
+    if (obj.value !== undefined) return obj.value;
+    if (obj._value !== undefined) return obj._value;
+    // Vue 3 reactive proxy — JSON roundtrip strips reactivity
+    try { return JSON.parse(JSON.stringify(obj)); } catch (e) { return obj; }
+  }
+
+  function extractFeedsFromState(source = 'auto') {
+    try {
+      const state = window.__INITIAL_STATE__;
+      if (!state || typeof state !== 'object') return null;
+
+      let rawFeeds = null;
+
+      if (source === 'search' || source === 'auto') {
+        const searchFeeds = state.search?.feeds;
+        const searchData = unwrapRef(searchFeeds);
+        if (searchData && Array.isArray(searchData) && searchData.length > 0) {
+          rawFeeds = searchData;
+        }
+      }
+
+      if (!rawFeeds && (source === 'explore' || source === 'auto')) {
+        const homeFeeds = state.feed?.feeds;
+        const homeData = unwrapRef(homeFeeds);
+        if (homeData) {
+          // Flatten 2D array if needed
+          const flat = [];
+          const arr = Array.isArray(homeData) ? homeData : [homeData];
+          for (const item of arr) {
+            if (Array.isArray(item)) { for (const sub of item) flat.push(sub); }
+            else flat.push(item);
+          }
+          if (flat.length > 0) rawFeeds = flat;
+        }
+      }
+
+      if (!rawFeeds || rawFeeds.length === 0) return null;
+
+      return rawFeeds.map(item => {
+        const nc = item.noteCard || {};
+        const user = nc.user || {};
+        const info = nc.interactInfo || {};
+        const cover = nc.cover || {};
+        return {
+          noteId: item.id || '',
+          xsecToken: item.xsecToken || '',
+          title: nc.displayTitle || '',
+          type: nc.type || '',
+          authorName: user.nickname || user.nickName || '',
+          authorId: user.userId || '',
+          authorAvatar: user.avatar || '',
+          likeCount: parseInt(info.likedCount) || 0,
+          collectCount: parseInt(info.collectedCount) || 0,
+          commentCount: parseInt(info.commentCount) || 0,
+          sharedCount: parseInt(info.sharedCount) || 0,
+          coverImage: cover.urlDefault || cover.urlPre || '',
+          isVideo: nc.type === 'video',
+          noteUrl: item.id ? `https://www.xiaohongshu.com/explore/${item.id}${item.xsecToken ? '?xsec_token=' + encodeURIComponent(item.xsecToken) : ''}` : '',
+        };
+      });
+    } catch (e) { return null; }
+  }
+
+  // ── Structured filter application ──
+  async function applyStructuredFilters(filters) {
+    if (!filters || typeof filters !== 'object') return { applied: false, reason: 'No filters provided' };
+
+    // Find filter trigger
+    const trigger = document.querySelector('.filter, [class*="filter-btn"], [class*="filter-trigger"]');
+    if (!trigger) return { applied: false, reason: 'Filter trigger not found' };
+
+    // Hover to open panel
+    trigger.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    await sleep(500);
+
+    const panel = document.querySelector('.filter-panel, [class*="filter-panel"], [class*="filterPanel"]');
+    if (!panel) {
+      trigger.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+      return { applied: false, reason: 'Filter panel did not appear' };
+    }
+
+    const applied = [];
+    for (const [dim, value] of Object.entries(filters)) {
+      const options = FILTER_OPTIONS[dim];
+      if (!options || !options.includes(value)) continue;
+
+      // Find clickable element with matching text inside panel
+      const els = panel.querySelectorAll('span, div, label, a, li');
+      for (const el of els) {
+        if ((el.textContent || '').trim() === value) {
+          el.click();
+          applied.push({ dimension: dim, value });
+          await sleep(300);
+          break;
+        }
+      }
+    }
+
+    // Dismiss panel
+    trigger.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true }));
+    await sleep(500);
+
+    return { applied: true, filters: applied };
+  }
 
 function parseFeedCards() {
   let sections = document.querySelectorAll('section.note-item');
@@ -156,6 +294,22 @@ function parseComments(limit) {
   return comments;
 }
 
+// ── Rate Limiter ──
+  if (window.__xhsRateLimiter) {
+    await window.__xhsRateLimiter.throttle('feed/' + action);
+    const captcha = window.__xhsRateLimiter.checkCaptcha();
+    if (captcha) return captcha;
+  }
+
+  const validActions = ['listFeeds', 'searchFeeds', 'getFeedDetail', 'loadAllComments', 'getComments', 'scrollForMore'];
+
+  // ── Rate Limiter (ref: client.py _check_rate_limit / _check_captcha) ──
+  if (window.__xhsRateLimiter) {
+    await window.__xhsRateLimiter.throttle('feed/' + action);
+    const captcha = window.__xhsRateLimiter.checkCaptcha();
+    if (captcha) return captcha;
+  }
+
 // ── Actions ─────────────────────────────────────────────────────────
 
 if (action === 'listFeeds') {
@@ -163,8 +317,12 @@ if (action === 'listFeeds') {
   if (!url.includes('xiaohongshu.com')) {
     return { action: 'listFeeds', success: false, error: 'Not on xiaohongshu.com. Navigate to https://www.xiaohongshu.com/explore first.' };
   }
-  const feeds = parseFeedCards();
-  return { action: 'listFeeds', success: true, pageUrl: url, feedCount: feeds.length, feeds,
+  // Try __INITIAL_STATE__ first, fall back to DOM scraping
+  await waitForInitialState(3000);
+  let feeds = extractFeedsFromState('explore');
+  const dataSource = feeds ? 'initialState' : 'dom';
+  if (!feeds) feeds = parseFeedCards();
+  return { action: 'listFeeds', success: true, pageUrl: url, feedCount: feeds.length, feeds, dataSource,
     hint: feeds.length === 0 ? 'No feeds found. Page may still be loading.' : `Found ${feeds.length} feeds.` };
 }
 
@@ -196,18 +354,34 @@ if (action === 'searchFeeds') {
     }
   }
 
-  const appliedFilters = {};
-  if (Object.keys(filters).length > 0) {
-    for (const [filterKey, filterValue] of Object.entries(filters)) {
-      const allButtons = document.querySelectorAll('button, [role="tab"], [class*="filter"] span, [class*="filter"] div, .filter-item');
-      for (const btn of allButtons) {
-        if (safeText(btn) === filterValue) { btn.click(); appliedFilters[filterKey] = filterValue; await sleep(500); break; }
+  // Apply structured filters
+  let appliedFilters = {};
+  if (filters && typeof filters === 'object') {
+        await sleep(1000);
+        const filterResult = await applyStructuredFilters(filters);
+        if (filterResult.applied) await sleep(1500); // wait for filtered results
+        appliedFilters = filterResult;
       }
-    }
-    await sleep(1500);
+
+  // Scroll 3× by 500px before extracting results
+  for (let i = 0; i < 3; i++) {
+    window.scrollBy(0, 500);
+    await sleep(500);
   }
-  const results = parseFeedCards();
-  return { action: 'searchFeeds', success: true, keyword, appliedFilters, resultCount: results.length, results, pageUrl: window.location.href };
+
+  // Try __INITIAL_STATE__ first, fall back to DOM scraping
+  await waitForInitialState(3000);
+  let results = extractFeedsFromState('search');
+  const dataSource = results ? 'initialState' : 'dom';
+  if (!results) results = parseFeedCards();
+
+  // Apply limit if specified
+  const limit = args.limit;
+  if (typeof limit === 'number' && limit > 0 && results.length > limit) {
+    results = results.slice(0, limit);
+  }
+
+  return { action: 'searchFeeds', success: true, keyword, appliedFilters, resultCount: results.length, results, dataSource, pageUrl: window.location.href };
 }
 
 if (action === 'getFeedDetail') {
@@ -304,12 +478,15 @@ if (action === 'loadAllComments') {
 }
 
 if (action === 'scrollForMore') {
-  const beforeCount = parseFeedCards().length;
+  // Try __INITIAL_STATE__ first, fall back to DOM
+  await waitForInitialState(2000);
+  const beforeFeeds = extractFeedsFromState('explore') || parseFeedCards();
+  const beforeCount = beforeFeeds.length;
   window.scrollTo(0, document.body.scrollHeight);
   await sleep(2000);
-  const afterCount = parseFeedCards().length;
-  const feeds = parseFeedCards();
-  return { action: 'scrollForMore', success: true, previousCount: beforeCount, newCount: afterCount, loaded: afterCount - beforeCount, feeds, hasMore: afterCount > beforeCount };
+  const afterFeeds = extractFeedsFromState('explore') || parseFeedCards();
+  const afterCount = afterFeeds.length;
+  return { action: 'scrollForMore', success: true, previousCount: beforeCount, newCount: afterCount, loaded: afterCount - beforeCount, feeds: afterFeeds, hasMore: afterCount > beforeCount };
 }
 
 return { action, success: false, error: `Unknown action: "${action}"`, version: VERSION, availableActions: ['listFeeds', 'searchFeeds', 'getFeedDetail', 'loadAllComments', 'scrollForMore'] };
