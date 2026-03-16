@@ -20,7 +20,11 @@ const isPost    = /\/explore\/[a-f0-9]{24}/.test(pathname);
 
 // ── Suite 1: Domain ─────────────────────────────────────────────────
 assert("Domain: URL exists", url.length > 0);
-assert("Domain: XHS", isXhs, `Got: ${hostname}`);
+if (isXhs) {
+  assert("Domain: XHS", true);
+} else {
+  skip("Domain: XHS", `Not on xiaohongshu.com (got: ${hostname})`);
+}
 assert("Domain: Has title", document.title.length > 0);
 
 if (!isXhs) { skip("All remaining suites", "Not on xiaohongshu.com"); } else {

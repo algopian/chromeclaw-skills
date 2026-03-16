@@ -1,0 +1,19 @@
+{
+  "name": "chromeclaw-skills",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx scripts/test-skill.ts",
+    "test:git": "tsx scripts/test-skill.ts git",
+    "test:git:unit": "tsx scripts/test-skill.ts git unit",
+    "test:git:e2e": "tsx scripts/test-skill.ts git e2e",
+    "test:xiaohongshu": "tsx scripts/test-skill.ts xiaohongshu",
+    "test:xiaohongshu:unit": "tsx scripts/test-skill.ts xiaohongshu unit",
+    "test:xiaohongshu:e2e": "tsx scripts/test-skill.ts xiaohongshu e2e"
+  },
+  "devDependencies": {
+    "puppeteer": "^24.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
