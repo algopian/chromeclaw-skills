@@ -1641,9 +1641,8 @@ function extractMyUserId(h, c) { return window.__xhsExtractMyUserId(h, c); }
   {
     const url = 'https://www.xiaohongshu.com/search_result?keyword=%25E5%25A4%25A7';
     const r = km(url, '大');
-    // URLSearchParams.get decodes once → '%E5%A4%A7', then decodeURIComponent decodes again → '大'
-    // So double-encoded DOES match after the two decode rounds in km()
-    assert("S28 KW: double-encoded matches after double decode", r.keywordMatch);
+    // Double-encoded should NOT match — that's a different string
+    assert("S28 KW: double-encoded does not match", !r.keywordMatch);
   }
 
   // Special characters in keyword

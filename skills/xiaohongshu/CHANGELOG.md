@@ -1,5 +1,53 @@
 # Xiaohongshu Skill Changelog
 
+## v2.9.0 (2026-03-26)
+
+### Post-Mortem Improvements from "Article → XHS" Pipeline Session
+
+**Context:** During a session publishing a 5-image XHS post (Gemini-generated images + bilingual content), several pain points were identified. ~27 out of ~61 tool calls were wasted due to silent failures and missing validations. This release fixes the root causes.
+
+#### publish.js — Breaking Changes
+
+1. **`fillTitle` now REJECTS titles over 20 chars** (was: silently truncated)
+   - Returns `{ success: false, error: "Title too long: 21 chars (limit: 20)", hint: "..." }`
+   - Previously truncated and returned `{ truncated: true }` — too easy to miss
+   - Includes `truncatedPreview` in error response for quick fix
+
+2. **`addTags` is now budget-aware** — respects 1000 char limit
+   - Calculates remaining space before adding each tag
+   - Skips tags that would push content over 1000 chars
+   - Returns `{ tagsAdded: 5, tagsSkipped: ["tag6", "tag7"] }` instead of adding all and warning after
+   - Previously added all tags and returned a warning string — post was left in invalid state
+
+3. **`fullPublish` now pre-validates everything before touching DOM**
+   - Checks title length (≤20), content length, and combined content+tags budget (≤1000)
+   - Returns clear error with calculation: `"Content + tags would be 1053 chars (limit: 1000)"`
+   - Returns `hint` with safe content limit: `"Safe content limit with 7 tags: 900 chars"`
+   - If title or content missing, returns explicit error (was: returned help menu)
+   - Tags are also budget-aware within fullPublish
+
+4. **Unknown/failed actions no longer return help menu**
+   - Known actions that fail validation return explicit `{ success: false, error: "..." }`
+   - Help menu only returned for `action: "help"` or truly unknown action names
+   - Previously, `fullPublish` with bad params would return the action list, which was confusing
+   - Added `KNOWN_ACTIONS` list for proper routing
+
+#### SKILL.md
+
+5. **Added "Content Budget" section** with clear character budget table
+   - Title: ≤20 chars
+   - Content + Tags combined: ≤1000 chars  
+   - Each tag costs: tag.length + 2 chars
+   - Safe content limit with 7 tags: ~950 chars
+
+6. **Updated action descriptions** in Module Reference table:
+   - `fillTitle`: "Set title (≤20 chars, **rejects** if too long)"
+   - `addTags`: "Append hashtags (budget-aware, skips tags that would exceed 1000)"
+
+7. **Bumped version to 2.9.0** (SKILL.md and publish.js)
+
+---
+
 ## v2.7.1 (2026-03-15)
 
 ### 🔧 Bug Fixes from Live Testing

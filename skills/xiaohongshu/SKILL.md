@@ -1,7 +1,7 @@
 ---
 name: Xiaohongshu
 description: Full automation toolkit for Xiaohongshu (小红书/RedNote) — login, browse, search, publish, comment, engage, and profile management via browser-injected JavaScript.
-version: 2.7.1
+version: 2.9.0
 ---
 
 # Xiaohongshu Skill
@@ -67,11 +67,32 @@ feed.js { action: "loadAllComments", commentLimit: 50 }
 
 ### ✍️ Publish Image Post
 ```
-publish.js { action: "navigateToPublish" }
-publish.js { action: "selectTab", tab: "上传图文" }
-publish.js { action: "fullPublish", title: "标题", content: "内容", tags: ["tag1"], imageDataUrl: "data:image/jpeg;base64,..." }
-publish.js { action: "clickPublish" }   # or { action: "saveDraft" }
+# Step 1-2: Navigate + select tab (runs on XHS tab)
+publish.js { action: "navigateToPublish" }                      # tabId: xhsTabId
+publish.js { action: "selectTab", tab: "上传图文" }              # tabId: xhsTabId
+
+# Step 3: ⭐ Upload images from URLs (handles cross-origin automatically!)
+# ⚠️ uploadFromUrl runs in SANDBOX (no tabId!) — pass targetTabId in args
+# Single image:
+publish.js { action: "uploadFromUrl", imageUrls: "https://example.com/image.jpg", targetTabId: <xhsTabId> }
+# Multiple images:
+publish.js { action: "uploadFromUrl", imageUrls: ["url1", "url2", "url3"], targetTabId: <xhsTabId> }
+
+# Or use generateCover for simple text-based covers (runs on XHS tab):
+publish.js { action: "generateCover", coverOptions: { title: "标题", emoji: "🔥" } }   # tabId: xhsTabId
+
+# Step 4-6: Wait + fill + publish (runs on XHS tab)
+publish.js { action: "waitForReady" }                            # tabId: xhsTabId
+publish.js { action: "fullPublish", title: "标题", content: "内容", tags: ["tag1"] }  # tabId: xhsTabId
+publish.js { action: "clickPublish" }                            # tabId: xhsTabId
 ```
+
+> **⚠️ IMPORTANT**: `uploadFromUrl` is the ONLY action that runs in sandbox context (no tabId).
+> All other actions run on the XHS tab (pass tabId). `uploadFromUrl` needs `chrome.debugger` +
+> `chrome.scripting` APIs which are only available in extension context.
+>
+> **DEPRECATED**: `uploadImageBase64` / `uploadImages` / `uploadImageFromUrl` — these pass
+> base64 via args which fails for real images (too large). Use `uploadFromUrl` instead.
 
 ### 🎬 Publish Video Post
 ```
@@ -233,21 +254,24 @@ Attaches `window.__xhsRateLimiter` + `window.__xhsCaptchaChecker` — auto-detec
 | `selectTab` | `tab` | Switch: "上传图文" / "上传视频" / "写长文" |
 | `verifyPage` | — | Check publish page readiness |
 | `waitForReady` | `timeoutMs?` | Poll until editor loaded (default 10s) |
-| `uploadImageBase64` | `imageDataUrl` or `imageDataUrls[]` | Upload image(s) from base64 |
-| `uploadImageFromUrl` | `imageUrl` | Upload image from URL |
-| `uploadVideo` | `videoDataUrl` | Upload video from base64 (≤50MB recommended) |
-| `waitForVideoReady` | `timeoutMs?` | Poll until processing done (default 5min, max 10min) |
-| `generateCover` | `coverOptions` | Create cover via Canvas |
-| `fullPublish` | `title`, `content`, `tags[]?`, `imageDataUrl?` | Pre-flight + fill all in one call |
-| `fillTitle` | `title` | Set title (≤20 chars) |
+| ⭐ `uploadFromUrl` | `imageUrls`, `targetTabId` | Upload cross-origin images via helper tab + CDP. Handles lh3.googleusercontent.com, etc. Single URL string or array. |
+| `generateCover` | `coverOptions` | Create text cover via Canvas |
+| `fullPublish` | `title`, `content`, `tags[]?` | Pre-flight + fill all in one call |
+| `fillTitle` | `title` | Set title (≤20 chars, **rejects** if too long) |
 | `fillContent` | `content` | Set content (≤1000 chars) |
-| `addTags` | `tags[]` | Append hashtags + auto-dismiss dropdown |
+| `addTags` | `tags[]` | Append hashtags (budget-aware, skips tags that would exceed 1000) |
 | `clickPublish` | — | Dismiss dropdowns + publish |
 | `saveDraft` | — | Dismiss dropdowns + save draft |
 | `checkPublishResult` | — | Verify publish success |
 | `setVisibility` | `visibility` | "公开可见" / "仅自己可见" / "仅互关好友可见" |
 | `setOriginal` | `isOriginal` | Toggle original declaration |
 | `setSchedule` | `scheduleAt` | Schedule (1hr–14 days, ISO8601) |
+
+**`uploadFromUrl` architecture:** Opens a helper tab for each image URL → attaches CDP to helper tab (no conflict with ChromeClaw) → extracts base64 via canvas → injects File into XHS publish tab via `chrome.scripting.executeScript` (avoids CDP conflict on target tab) → closes helper tab. Supports batch upload with append mode (preserves existing files). **Runs in sandbox (no tabId)** — needs `chrome.debugger` + `chrome.scripting` APIs. Pass `targetTabId` in args to specify the XHS publish tab.
+
+**Deprecated actions:** `uploadImageBase64`, `uploadImages`, `uploadImageFromUrl` — these pass base64 via args which fails for real images. Use `uploadFromUrl` instead.
+
+**No external dependencies:** All cross-origin image transfer logic is self-contained in publish.js. No need for the standalone `image_bridge` tool when publishing to XHS.
 
 ### markdown.js — Markdown → Image Publishing
 
@@ -288,15 +312,45 @@ Attaches `window.__xhsRateLimiter` + `window.__xhsCaptchaChecker` — auto-detec
 | `extractTags` | `text` | Extract #hashtags from text |
 | `parseCookies` | `cookieString` | Parse raw cookie string |
 
+## Content Budget
+
+XHS has strict character limits. Plan ahead:
+
+| Field | Limit | Notes |
+|-------|-------|-------|
+| Title | ≤ 20 chars | `fillTitle` now **rejects** (not truncates) if over 20 |
+| Content + Tags | ≤ 1000 chars combined | Tags are appended to content as `#tag ` |
+| Tags | ≤ 10 tags | Each tag costs `tag.length + 2` chars (`#` + space) |
+
+**Safe content length:** If you plan 7 tags averaging 4 chars each, that's ~7 × 6 = 42 chars + 2 for `\n\n` = 44 chars for tags. So keep content ≤ **~950 chars**.
+
+`addTags` is now **budget-aware** — it automatically skips tags that would push total over 1000, rather than adding them and warning after the fact.
+
+`fullPublish` now **pre-validates** title + content + tags combined before touching the DOM. If it would exceed limits, it returns an error with a helpful hint instead of silently failing.
+
 ## Cross-Skill: Gemini Image → XHS
 
-Transfer Gemini-generated images to XHS via extension IndexedDB bridge:
+Use `uploadFromUrl` to transfer Gemini-generated images directly — **one call per image, fully automatic**:
 
 ```
 # 1. Generate image on Gemini tab (see gemini-image-gen skill)
-# 2. Open image URL in its own tab → imageTabId
-# 3. Convert to base64 via canvas on image tab
-# 4. Read via CDP: debugger("Runtime.evaluate", { expression: "window.__imageBase64" })
-# 5. Upload to XHS:
-publish.js { action: "uploadImageBase64", imageDataUrl: "<base64>" }
+#    → get fullSizeUrls from result (e.g. "https://lh3.googleusercontent.com/...=s0")
+
+# 2. Upload directly to XHS publish page:
+publish.js { action: "uploadFromUrl", imageUrls: "https://lh3.googleusercontent.com/...=s0", targetTabId: <xhsTabId> }
+
+# Or batch upload multiple images at once:
+publish.js { action: "uploadFromUrl", imageUrls: ["url1", "url2", "url3"], targetTabId: <xhsTabId> }
+
+# 3. Wait for editor, then fill form:
+publish.js { action: "waitForReady" }
+publish.js { action: "fullPublish", title: "标题", content: "内容", tags: ["tag1"] }
+publish.js { action: "clickPublish" }
 ```
+
+> **How it works:** `uploadFromUrl` opens a helper tab per image URL → extracts base64 via CDP canvas
+> (safe: we own the helper tab) → injects File into XHS tab via `chrome.scripting` (safe: no CDP
+> conflict with ChromeClaw) → closes helper tab. No base64 passes through agent args.
+>
+> **No external tool needed:** The image transfer logic is fully built into publish.js.
+> The standalone `image_bridge` tool is NOT required for XHS publishing.
